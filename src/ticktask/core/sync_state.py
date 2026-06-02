@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ticktask.core.config import config_dir
+from ticktask.core.errors import ValidationError
 
 SYNC_STATE_FILENAME = "sync-state.json"
 
@@ -23,7 +24,7 @@ class SyncStateStore:
             return {"version": 1, "states": {}}
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
-            raise ValueError("sync state file root must be a JSON object")
+            raise ValidationError("Sync state file root must be a JSON object.")
         states = raw.get("states")
         if not isinstance(states, dict):
             states = {}
@@ -59,7 +60,7 @@ class SyncStateStore:
     def _validate_state_key(state_key: str) -> str:
         key = state_key.strip()
         if not key:
-            raise ValueError("sync state key cannot be empty")
+            raise ValidationError("Sync state key cannot be empty.")
         return key
 
     @staticmethod
@@ -68,7 +69,7 @@ class SyncStateStore:
         try:
             datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise ValueError("sync timestamp must be ISO-8601") from exc
+            raise ValidationError("Sync timestamp must be ISO-8601.") from exc
         return value
 
 

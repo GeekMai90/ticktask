@@ -4,6 +4,7 @@ import pytest
 
 from ticktask.core.auth import AuthManager
 from ticktask.core.config import ConfigStore
+from ticktask.core.errors import AmbiguousOperationError
 from ticktask.core.errors import ConfirmationRequiredError
 from ticktask.core.errors import ValidationError
 from ticktask.core.services import TicktaskService
@@ -264,6 +265,79 @@ def test_create_task_idempotency_rejects_key_reuse_for_different_payload(tmp_pat
     assert "different payload" in exc.value.message
 
 
+def test_create_task_idempotency_blocks_retry_after_unknown_write_failure(tmp_path) -> None:
+    class FailingCreateClient(FakeClient):
+        def create_task(self, payload):
+            self.created_tasks.append(payload)
+            raise RuntimeError("connection dropped")
+
+    manager = AuthManager(ConfigStore(tmp_path / "config.json"))
+    manager.init("ticktick", "client", "secret", "http://localhost", access_token="token")
+    fake_client = FailingCreateClient()
+    svc = TicktaskService(auth=manager, client_factory=lambda _profile: fake_client)
+
+    with pytest.raises(RuntimeError):
+        svc.create_task("New task", project="Inbox", priority="high", idempotency_key="agent-key-1")
+    with pytest.raises(ValidationError) as exc:
+        svc.create_task("New task", project="Inbox", priority="high", idempotency_key="agent-key-1")
+
+    assert "failed before its result was recorded" in exc.value.message
+    assert len(fake_client.created_tasks) == 1
+
+
+def test_create_task_rejects_empty_title_before_api_call(tmp_path) -> None:
+    svc = service(tmp_path)
+
+    with pytest.raises(ValidationError) as exc:
+        svc.create_task("   ")
+
+    assert "non-empty title" in exc.value.message
+    assert svc.client.created_tasks == []
+
+
+def test_task_mutations_reject_empty_task_ids(tmp_path) -> None:
+    svc = service(tmp_path)
+
+    operations = [
+        lambda: svc.complete_task("", "p1", confirmed=True),
+        lambda: svc.get_task("", "p1"),
+        lambda: svc.update_task("", "p1", title="Renamed"),
+        lambda: svc.delete_task("", "p1", confirmed=True),
+        lambda: svc.move_task("", "p1", "p2"),
+        lambda: svc.set_task_reminders("", "p1", ["TRIGGER:PT10M"]),
+        lambda: svc.clear_task_reminders("", "p1"),
+        lambda: svc.set_task_repeat("", "p1", preset="weekly"),
+        lambda: svc.clear_task_repeat("", "p1"),
+        lambda: svc.add_task_tag("", "p1", "agent"),
+        lambda: svc.remove_task_tag("", "p1", "agent"),
+        lambda: svc.add_checklist_item("", "p1", "New item"),
+        lambda: svc.update_checklist_item("", "p1", "i1", title="Renamed"),
+        lambda: svc.delete_checklist_item("", "p1", "i1", confirmed=True),
+    ]
+
+    for operation in operations:
+        with pytest.raises(AmbiguousOperationError):
+            operation()
+
+
+def test_update_task_rejects_empty_title(tmp_path) -> None:
+    svc = service(tmp_path)
+
+    with pytest.raises(ValidationError) as exc:
+        svc.update_task("t1", "p1", title="   ")
+
+    assert "Task title cannot be empty" in exc.value.message
+
+
+def test_move_task_rejects_same_project(tmp_path) -> None:
+    svc = service(tmp_path)
+
+    with pytest.raises(ValidationError) as exc:
+        svc.move_task("t1", "p1", "p1")
+
+    assert "source and destination projects must differ" in exc.value.message
+
+
 def test_complete_requires_confirmation(tmp_path) -> None:
     try:
         service(tmp_path).complete_task("t1", "p1", confirmed=False)
@@ -488,6 +562,14 @@ def test_focus_service_methods_and_30_day_limit(tmp_path) -> None:
         assert exc.code == "VALIDATION_ERROR"
     else:
         raise AssertionError("expected ValidationError")
+
+    with pytest.raises(ValidationError) as invalid_date:
+        svc.list_focuses("not-a-date", "2026-01-02", focus_type=0)
+    assert "Invalid focus date" in invalid_date.value.message
+
+    with pytest.raises(ValidationError) as reversed_range:
+        svc.list_focuses("2026-01-03", "2026-01-02", focus_type=0)
+    assert "--from must be on or before --to" in reversed_range.value.message
 
 
 def test_focus_delete_requires_confirmation(tmp_path) -> None:

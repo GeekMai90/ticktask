@@ -500,6 +500,8 @@ class TicktaskService:
         priority: str = "none",
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
+        if not title.strip():
+            raise ValidationError("Creating a task requires a non-empty title.")
         normalized_due = normalize_task_date(due) if due else None
         normalized_priority = normalize_priority(priority) or "none"
         payload: dict[str, Any] = {"title": title}
@@ -516,12 +518,24 @@ class TicktaskService:
                 projects = [Project.from_api(item) for item in client.list_projects()]
                 selected = self._select_one_project(projects, project)
                 payload["projectId"] = selected.id
-            replayed = self.idempotency_store.get("task.create", idempotency_key, payload)
-            if replayed is not None:
-                task = dict(replayed)
+            claim = self.idempotency_store.reserve("task.create", idempotency_key, payload)
+            if claim.replayed and claim.result is not None:
+                task = dict(claim.result)
                 task["_idempotency"] = {"key": idempotency_key, "replayed": True}
                 return task
-            task = Task.from_api(client.create_task(payload), payload.get("projectId")).to_dict()
+            try:
+                task = Task.from_api(
+                    client.create_task(payload),
+                    payload.get("projectId"),
+                ).to_dict()
+            except Exception as exc:
+                self.idempotency_store.mark_failed(
+                    "task.create",
+                    idempotency_key,
+                    payload,
+                    str(exc),
+                )
+                raise
             self.idempotency_store.record("task.create", idempotency_key, payload, task)
             if idempotency_key:
                 task["_idempotency"] = {"key": idempotency_key, "replayed": False}
@@ -531,6 +545,7 @@ class TicktaskService:
 
 
     def add_task_tag(self, task_id: str, project_id: str, tag: str) -> dict[str, Any]:
+        self._require_task_id(task_id, "Adding a task tag")
         if not project_id:
             raise AmbiguousOperationError("Adding a task tag requires `project_id`.")
         normalized_tag = self._normalize_tag(tag)
@@ -547,6 +562,7 @@ class TicktaskService:
             client.close()
 
     def remove_task_tag(self, task_id: str, project_id: str, tag: str) -> dict[str, Any]:
+        self._require_task_id(task_id, "Removing a task tag")
         if not project_id:
             raise AmbiguousOperationError("Removing a task tag requires `project_id`.")
         normalized_tag = self._normalize_tag(tag)
@@ -574,6 +590,7 @@ class TicktaskService:
         title: str,
         item_id: str | None = None,
     ) -> dict[str, Any]:
+        self._require_task_id(task_id, "Adding a checklist item")
         if not project_id:
             raise AmbiguousOperationError("Adding a checklist item requires `project_id`.")
         if not title.strip():
@@ -604,6 +621,7 @@ class TicktaskService:
         title: str | None = None,
         status: int | str | None = None,
     ) -> dict[str, Any]:
+        self._require_task_id(task_id, "Updating a checklist item")
         if not project_id:
             raise AmbiguousOperationError("Updating a checklist item requires `project_id`.")
         if title is None and status is None:
@@ -643,6 +661,7 @@ class TicktaskService:
     ) -> dict[str, Any]:
         if not confirmed:
             raise ConfirmationRequiredError("Deleting a checklist item requires explicit confirmation.")
+        self._require_task_id(task_id, "Deleting a checklist item")
         if not project_id:
             raise AmbiguousOperationError("Deleting a checklist item requires `project_id`.")
         client = self._with_client()
@@ -850,6 +869,7 @@ class TicktaskService:
     def complete_task(self, task_id: str, project_id: str, confirmed: bool) -> dict[str, Any]:
         if not confirmed:
             raise ConfirmationRequiredError("Completing a task requires explicit confirmation.")
+        self._require_task_id(task_id, "Completing a task")
         if not project_id:
             raise AmbiguousOperationError("Completing a task requires `project_id`.")
         client = self._with_client()
@@ -860,6 +880,7 @@ class TicktaskService:
             client.close()
 
     def get_task(self, task_id: str, project_id: str) -> dict[str, Any]:
+        self._require_task_id(task_id, "Getting a task")
         if not project_id:
             raise AmbiguousOperationError("Getting a task requires `project_id`.")
         client = self._with_client()
@@ -877,12 +898,15 @@ class TicktaskService:
         due: str | None = None,
         priority: str | None = None,
     ) -> dict[str, Any]:
+        self._require_task_id(task_id, "Updating a task")
         if not project_id:
             raise AmbiguousOperationError("Updating a task requires `project_id`.")
         normalized_due = normalize_task_date(due) if due is not None else None
         normalized_priority = normalize_priority(priority) if priority is not None else None
         payload: dict[str, Any] = {"id": task_id, "projectId": project_id}
         if title is not None:
+            if not title.strip():
+                raise ValidationError("Task title cannot be empty.")
             payload["title"] = title
         if content is not None:
             payload["content"] = content
@@ -900,6 +924,7 @@ class TicktaskService:
             client.close()
 
     def set_task_reminders(self, task_id: str, project_id: str, reminders: list[str]) -> dict[str, Any]:
+        self._require_task_id(task_id, "Setting task reminders")
         if not project_id:
             raise AmbiguousOperationError("Setting task reminders requires `project_id`.")
         normalized = [reminder.strip() for reminder in reminders if reminder and reminder.strip()]
@@ -908,6 +933,7 @@ class TicktaskService:
         return self._update_existing_task_fields(task_id, project_id, {"reminders": normalized})
 
     def clear_task_reminders(self, task_id: str, project_id: str) -> dict[str, Any]:
+        self._require_task_id(task_id, "Clearing task reminders")
         if not project_id:
             raise AmbiguousOperationError("Clearing task reminders requires `project_id`.")
         return self._update_existing_task_fields(task_id, project_id, {"reminders": []})
@@ -919,6 +945,7 @@ class TicktaskService:
         preset: str | None = None,
         rrule: str | None = None,
     ) -> dict[str, Any]:
+        self._require_task_id(task_id, "Setting task repeat")
         if not project_id:
             raise AmbiguousOperationError("Setting task repeat requires `project_id`.")
         if bool(preset) == bool(rrule):
@@ -934,6 +961,7 @@ class TicktaskService:
         return self._update_existing_task_fields(task_id, project_id, {"repeatFlag": repeat_flag})
 
     def clear_task_repeat(self, task_id: str, project_id: str) -> dict[str, Any]:
+        self._require_task_id(task_id, "Clearing task repeat")
         if not project_id:
             raise AmbiguousOperationError("Clearing task repeat requires `project_id`.")
         return self._update_existing_task_fields(task_id, project_id, {"repeatFlag": ""})
@@ -958,6 +986,7 @@ class TicktaskService:
     def delete_task(self, task_id: str, project_id: str, confirmed: bool) -> dict[str, Any]:
         if not confirmed:
             raise ConfirmationRequiredError("Deleting a task requires explicit confirmation.")
+        self._require_task_id(task_id, "Deleting a task")
         if not project_id:
             raise AmbiguousOperationError("Deleting a task requires `project_id`.")
         client = self._with_client()
@@ -968,8 +997,11 @@ class TicktaskService:
             client.close()
 
     def move_task(self, task_id: str, from_project_id: str, to_project_id: str) -> dict[str, Any]:
+        self._require_task_id(task_id, "Moving a task")
         if not from_project_id or not to_project_id:
             raise AmbiguousOperationError("Moving a task requires source and destination project IDs.")
+        if from_project_id == to_project_id:
+            raise ValidationError("Moving a task source and destination projects must differ.")
         client = self._with_client()
         try:
             result = client.move_task(task_id, from_project_id, to_project_id)
@@ -1106,8 +1138,16 @@ class TicktaskService:
 
     @staticmethod
     def _validate_focus_range(from_time: str, to_time: str) -> None:
-        start = date.fromisoformat(from_time[:10])
-        end = date.fromisoformat(to_time[:10])
+        try:
+            start = date.fromisoformat(from_time[:10])
+            end = date.fromisoformat(to_time[:10])
+        except ValueError as exc:
+            raise ValidationError(
+                "Invalid focus date range.",
+                hint="Use ISO dates or datetimes beginning with YYYY-MM-DD.",
+            ) from exc
+        if start > end:
+            raise ValidationError("--from must be on or before --to.")
         if (end - start).days > 30:
             raise ValidationError("Focus queries are limited to a maximum 30-day range.")
 
@@ -1121,6 +1161,11 @@ class TicktaskService:
                     return [item for item in data[key] if isinstance(item, dict)]
             return [data]
         return []
+
+    @staticmethod
+    def _require_task_id(task_id: str, action: str) -> None:
+        if not task_id or not task_id.strip():
+            raise AmbiguousOperationError(f"{action} requires `task_id`.")
 
     def export_tasks(
         self,
@@ -1316,5 +1361,3 @@ class TicktaskService:
                 hint=f"Use a project ID. Matches: {names}.",
             )
         raise NotFoundError(f"Project `{value}` was not found.")
-
-

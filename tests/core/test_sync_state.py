@@ -1,5 +1,8 @@
 import json
 
+import pytest
+
+from ticktask.core.errors import ValidationError
 from ticktask.core.sync_state import SyncStateStore
 
 
@@ -22,16 +25,10 @@ def test_sync_state_store_validates_state_key_and_timestamp(tmp_path) -> None:
     store = SyncStateStore(tmp_path / "sync-state.json")
 
     for key in ["", "   "]:
-        try:
+        with pytest.raises(ValidationError) as exc:
             store.mark(key, "2026-05-17T00:00:00Z")
-        except ValueError as exc:
-            assert "state key" in str(exc)
-        else:
-            raise AssertionError("expected ValueError")
+        assert "state key" in exc.value.message
 
-    try:
+    with pytest.raises(ValidationError) as exc:
         store.mark("tasks", "not-a-timestamp")
-    except ValueError as exc:
-        assert "timestamp" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
+    assert "timestamp" in exc.value.message

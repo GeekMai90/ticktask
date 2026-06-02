@@ -20,6 +20,29 @@ def test_task_add_json(monkeypatch) -> None:
     assert payload["data"]["idempotency_key"] == "agent-key-1"
 
 
+def test_add_alias_preserves_json_output_and_idempotency_key(monkeypatch) -> None:
+    class FakeService:
+        def create_task(self, title, project=None, content=None, due=None, priority="none", idempotency_key=None):
+            return {
+                "id": "t1",
+                "title": title,
+                "project_id": project,
+                "idempotency_key": idempotency_key,
+                "raw": {},
+            }
+
+    monkeypatch.setattr("ticktask.cli.task.TicktaskService", lambda: FakeService())
+    result = runner.invoke(
+        app,
+        ["add", "Write tests", "--idempotency-key", "agent-key-1", "--json"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["data"]["title"] == "Write tests"
+    assert payload["data"]["idempotency_key"] == "agent-key-1"
+
+
 def test_task_query_json(monkeypatch) -> None:
     class FakeService:
         def query_tasks(self, query):
