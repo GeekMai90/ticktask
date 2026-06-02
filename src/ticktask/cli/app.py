@@ -160,9 +160,22 @@ def add_alias(
     content: str | None = typer.Option(None, "--content", help="Task body/content."),
     due: str | None = typer.Option(None, "--due", help="Due date string accepted by the API."),
     priority: str = typer.Option("none", "--priority", help="none, low, medium, or high."),
+    idempotency_key: str | None = typer.Option(
+        None,
+        "--idempotency-key",
+        help="Agent-supplied key to safely replay task creation without duplicate API writes.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit stable JSON."),
 ) -> None:
-    task_commands.add_task(title, project, content, due, priority, json_output)
+    task_commands.add_task(
+        title=title,
+        project=project,
+        content=content,
+        due=due,
+        priority=priority,
+        idempotency_key=idempotency_key,
+        json_output=json_output,
+    )
 
 
 @app.command("done")
